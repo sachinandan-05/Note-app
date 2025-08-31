@@ -10,6 +10,8 @@ A modern, full-stack notes application with real-time collaboration features, bu
 - **Markdown Support**: Format your notes with Markdown
 - **Search Functionality**: Quickly find your notes
 - **WebSocket Integration**: Instant updates across all connected clients
+##📦 Deployment
+For detailed packaging and deployment instructions, see [PACKAGING_GUIDE.md](./PACKAGING_GUIDE.md).
 
 ## 🛠️ Prerequisites
 
@@ -194,8 +196,7 @@ Framework: FastAPI
 Database: MongoDB with PyMongo
 Authentication: JWT
 Real-time: WebSocket support
-📦 Deployment
-For detailed packaging and deployment instructions, see [PACKAGING_GUIDE.md](./PACKAGING_GUIDE.md).
+
 
 🔧 Troubleshooting
 Connection Issues: Ensure MongoDB and Redis are running
