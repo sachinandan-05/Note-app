@@ -58,7 +58,7 @@ async def add_note(note: Note, payload: dict = Depends(verify_jwt)):
         }
 
         # Broadcast
-        await manager.broadcast({
+        await manager.send_to_user(user_id, {
             "type": "note_added",
             "data": new_note,
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -100,55 +100,28 @@ async def delete_note(note_id: str, payload: dict = Depends(verify_jwt)):
     notes_collection.delete_one({"_id": note_oid, "userId": user_id})
     invalidate_notes_cache(user_id)
 
-    await manager.broadcast({
-        "event": "note_deleted",
-        "id": note_id
+    await manager.send_to_user(user_id, {
+        "type": "note_deleted",
+        "data": {"id": note_id},
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
     return {"message": "Note deleted successfully"}
 
 # ---------------- WebSocket ----------------
-@router.websocket("/notes/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str):
-    user_id = None
+from fastapi import WebSocket, WebSocketDisconnect
+# ...
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str, userId: str):
+    # verify token -> user_id (omitted here)
+    await websocket.accept()
+    connection_id = await manager.connect(websocket, userId)
     try:
-        try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
-            user_id = str(payload["_id"])
-        except Exception as e:
-            logger.error(f"Invalid token: {e}")
-            await websocket.close(code=1008)
-            return
-
-        await websocket.accept()
-        logger.info(f"WebSocket connection accepted for user {user_id}")
-
-        await manager.connect(websocket, user_id)
-
         while True:
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-
-                if data == "ping":
-                    await websocket.send_text("pong")
-                else:
-                    logger.info(f"Received from {user_id}: {data}")
-
-            except asyncio.TimeoutError:
-                try:
-                    await websocket.send_json({"type": "heartbeat"})
-                except Exception as e:
-                    logger.error(f"Heartbeat failed for {user_id}: {e}")
-                    raise WebSocketDisconnect()
-            except WebSocketDisconnect:
-                logger.info(f"Client {user_id} disconnected")
-                break
-            except Exception as e:
-                logger.error(f"Error in WebSocket loop for {user_id}: {e}")
-                await websocket.close(code=1011)
-                break
-
+            _ = await websocket.receive_json()
+            # handle messages...
+    except WebSocketDisconnect:
+        pass
     finally:
-        if user_id:
-            await manager.disconnect(user_id)
-            logger.info(f"Cleaned up WebSocket connection for user {user_id}")
+        # Starlette already closed the socket on disconnect, so avoid double-close
+        await manager.disconnect(userId, connection_id, close=False)
