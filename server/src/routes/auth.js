@@ -5,5 +5,5 @@ const router=express.Router();
 
 // routes
 router.post("/signup",signup);
-router.post("/login",login,verifyToken);
+router.post("/login",login);
 export default router;

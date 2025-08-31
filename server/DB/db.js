@@ -13,4 +13,5 @@ const connectDB=async()=>{
         SafeLogger.error(error,"Database connection error")
     }
 }
+
 export default connectDB
