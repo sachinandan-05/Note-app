@@ -73,7 +73,7 @@ Database: MongoDB with PyMongo
 Authentication: JWT
 Real-time: WebSocket support
 📦 Deployment
-For detailed packaging and deployment instructions, see PACKAGING_GUIDE.md.
+For detailed packaging and deployment instructions, see [PACKAGING_GUIDE.md](./PACKAGING_GUIDE.md).
 
 🔧 Troubleshooting
 Connection Issues: Ensure MongoDB and Redis are running
@@ -195,7 +195,7 @@ Database: MongoDB with PyMongo
 Authentication: JWT
 Real-time: WebSocket support
 📦 Deployment
-For detailed packaging and deployment instructions, see PACKAGING_GUIDE.md.
+For detailed packaging and deployment instructions, see [PACKAGING_GUIDE.md](./PACKAGING_GUIDE.md).
 
 🔧 Troubleshooting
 Connection Issues: Ensure MongoDB and Redis are running
