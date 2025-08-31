@@ -15,30 +15,64 @@ function Login() {
   const [error, setError] = useState("");
 
   const handleLogin = async () => {
+    if (!email || !password) {
+      setError('Please enter both email and password');
+      return;
+    }
+
     setIsLoading(true);
-    setError("");
-  
+    setError('');
+    
     try {
-      const res = await loginUser(email, password); // API call
-      console.log("Login response:", res);
-  
-      if (res.token) {
-        // Use the login function from context (which handles both setUser and localStorage)
-        const userData = { 
-          name: res.name || email.split('@')[0], 
-          email,
-          token: res.token 
+      // Call the login API (this will also store the token in localStorage)
+      const userData = await loginUser(email, password);
+      
+      if (userData && userData.token) {
+        const userContextData = {
+          _id: userData._id,
+          name: userData.name || userData.email.split('@')[0],
+          email: userData.email,
+          token: userData.token
         };
-        login(userData);
-        console.log("User logged in:", userData, "Token:", res.token);
-  
-        // Navigate to dashboard
+      
+        // Save to context
+        login(userContextData);
+        
+        // The WebSocket connection will be handled by the WebSocketManager component
+        // which is watching the user context
         navigate("/dashboard");
       } else {
-        setError(res.message || "Login failed. Please try again.");
+        throw new Error('Invalid response from server');
       }
-    } catch (err) {
-      setError(err.message || "An error occurred. Please try again.");
+      
+    } catch (error) {
+      console.error('Login error:', error);
+      // Clean up any partial state on error
+      localStorage.removeItem('token');
+      localStorage.removeItem('userId');
+      localStorage.removeItem('user');
+      
+      // Provide user-friendly error message
+      if (error.message.includes('401') || error.message.includes('credentials')) {
+        setError('Invalid email or password');
+      } else if (error.message.includes('NetworkError')) {
+        setError('Unable to connect to the server. Please check your internet connection.');
+      } else {
+        setError('Login failed. Please try again.');
+      }
+      
+      // Provide user-friendly error messages
+      let errorMessage = 'An error occurred during login';
+      
+      if (error.message.includes('401')) {
+        errorMessage = 'Invalid email or password';
+      } else if (error.message.includes('NetworkError')) {
+        errorMessage = 'Unable to connect to the server. Please check your internet connection.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }

@@ -5,3 +5,4 @@ class Note(BaseModel):
     title: str
     content: str
     id: Optional[str] = None
+

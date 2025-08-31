@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchNotes, addNote, deleteNote as deleteNoteApi } from "../api/notes";
+import { webSocketService } from "../api/websocket";
 
 function Dashboard() {
   const [state, setState] = useState({
@@ -18,7 +19,6 @@ function Dashboard() {
   const { notes, title, content, skip, isLoading, searchTerm, selectedNote, viewMode, hasMore, error } = state;
   const limit = 20;
 
-  // Define loadNotes first
   const loadNotes = useCallback(async (reset = false) => {
     try {
       setState(prev => ({ ...prev, isLoading: true }));
@@ -43,78 +43,111 @@ function Dashboard() {
     }
   }, [skip, limit]);
 
+
+  // WebSocket effect for real-time updates
+ useEffect(() => {
+  const token = localStorage.getItem("token");
+  const userData = localStorage.getItem("userData");
+  const userId = userData ? JSON.parse(userData)?._id : null;
+
+  if (!token || !userId) {
+    console.error("Missing token or user ID for WebSocket connection");
+    return;
+  }
+
+  console.log("[Dashboard] Connecting WebSocket…");
+  webSocketService.connect(userId, token);
+
+  const handleMessage = (message) => {
+    if (!message?.type) return;
+
+    switch (message.type.toLowerCase()) {
+      case "note_added":
+        setState((prev) => {
+          const exists = prev.notes.some((n) => n.id === message.data.id);
+          if (exists) return prev;
+          return { ...prev, notes: [message.data, ...prev.notes], skip: prev.skip + 1 };
+        });
+        break;
+      case "note_updated":
+        setState((prev) => ({
+          ...prev,
+          notes: prev.notes.map((n) =>
+            n.id === message.data.id ? message.data : n
+          ),
+        }));
+        break;
+      case "note_deleted":
+        setState((prev) => ({
+          ...prev,
+          notes: prev.notes.filter((n) => n.id !== message.data.id),
+          skip: Math.max(0, prev.skip - 1),
+        }));
+        break;
+      default:
+        console.warn("[Dashboard] Unknown WS message:", message);
+    }
+  };
+
+  const removeHandler = webSocketService.addMessageHandler(handleMessage);
+
+  // ✅ Load first batch of notes on mount
+  loadNotes(true);
+  
+
+  return () => {
+    console.log("[Dashboard] Cleaning up WebSocket");
+    removeHandler();
+    webSocketService.disconnect();
+  };
+}, [loadNotes]);
+
+
+  // Define loadNotes first
+ 
+ 
+
   const handleDeleteNote = useCallback(async (noteId, e) => {
     e?.stopPropagation(); // Prevent triggering note selection
     if (!window.confirm('Are you sure you want to delete this note?')) return;
     
     try {
       await deleteNoteApi(noteId);
-      setState(prev => ({
-        ...prev,
-        notes: prev.notes.filter(note => note.id !== noteId),
-        selectedNote: prev.selectedNote?.id === noteId ? null : prev.selectedNote
-      }));
+      // ✅ Skip local update – WebSocket NOTE_DELETED will handle this
     } catch (error) {
       console.error("Failed to delete note:", error);
       alert('Failed to delete note. Please try again.');
     }
   }, []);
 
-  useEffect(() => {
-    let isMounted = true;
-    
-    const loadInitialNotes = async () => {
-      try {
-        await loadNotes(true);
-      } catch (error) {
-        if (isMounted) {
-          console.error("Error loading initial notes:", error);
-        }
-      }
-    };
-    
-    loadInitialNotes();
-    
-    return () => {
-      isMounted = true;
-    };
-  }, [loadNotes]);
-
-
+  // Handle adding a new note
   const handleAddNote = useCallback(async () => {
-    if (!title.trim() || !content.trim()) return;
+    if (!state.title.trim() || !state.content.trim() || state.isLoading) return;
     
-    setState(prev => ({ ...prev, isLoading: true }));
     try {
-      await addNote(title, content);
+      setState(prev => ({ ...prev, isLoading: true }));
+      await addNote({ title: state.title, content: state.content });
+      // Clear the form
       setState(prev => ({
         ...prev,
-        title: "",
-        content: "",
-        skip: 0,
+        title: '',
+        content: '',
         isLoading: false
       }));
-      loadNotes(true); // reload notes from start
+      // Note: We don't need to update notes state here because the WebSocket will handle it
     } catch (error) {
-      console.error("Failed to add note:", error);
+      console.error('Failed to add note:', error);
+      alert('Failed to add note. Please try again.');
       setState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [title, content, loadNotes]);
+  }, [state.title, state.content, state.isLoading]);
 
-  const handleResizeWindow = useCallback((mode) => {
-    if (window.electronAPI) {
-      window.electronAPI.send("resize-window", mode);
-    } else if (window.ipcRenderer) {
-      window.ipcRenderer.send("resize-window", mode);
-    } else {
-      console.warn("Electron API not available");
-    }
-  }, []);
+  // WebSocket message handler for real-time updates
 
   const filteredNotes = useMemo(() => 
     notes.filter(note => 
-      note.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      note.content?.toLowerCase().includes(searchTerm.toLowerCase())
+      (note.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      note.content?.toLowerCase().includes(searchTerm.toLowerCase()))
     ),
     [notes, searchTerm]
   );
@@ -128,6 +161,7 @@ function Dashboard() {
       minute: "2-digit",
     });
   }, []);
+
 
   const truncateContent = useCallback((text, maxLength = 150) => {
     if (!text) return "";

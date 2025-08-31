@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from "react";
+import { webSocketService } from "../api/websocket";
 
 export const AppContext = createContext();
 
@@ -24,7 +25,6 @@ export const AppProvider = ({ children }) => {
       try {
         const parsedUser = JSON.parse(userData);
         setUser(parsedUser);
-        console.log("Restored user from localStorage:", parsedUser);
       } catch (error) {
         console.error("Error parsing user data:", error);
         // Clear corrupted data
@@ -38,6 +38,7 @@ export const AppProvider = ({ children }) => {
   const login = (userData) => {
     // Store complete user data in state and localStorage
     const userToStore = {
+      _id: userData._id, // Make sure to include _id for WebSocket
       email: userData.email,
       name: userData.name || userData.email.split('@')[0],
       token: userData.token || "dummy-token"
@@ -48,11 +49,20 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem("userEmail", userToStore.email);
     localStorage.setItem("userData", JSON.stringify(userToStore));
     
+    // Connect WebSocket after successful login
+    if (userToStore._id && userToStore.token) {
+      webSocketService.connect(userToStore._id, userToStore.token);
+    }
+    
     console.log("User logged in and stored:", userToStore);
   };
 
   const logout = () => {
+    // Disconnect WebSocket before logging out
+    webSocketService.disconnect();
+    
     setUser(null);
+    setNotes([]);
     localStorage.removeItem("token");
     localStorage.removeItem("userEmail");
     localStorage.removeItem("userData");

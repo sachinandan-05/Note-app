@@ -1,93 +1,154 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer
 from utils.db import notes_collection
 from models.note import Note
 from utils.redis_utils import get_cached_notes, set_cached_notes, invalidate_notes_cache
-import jwt
-import os
+from utils.websocket_manager import manager
+import jwt, os, logging, asyncio
+from datetime import datetime, timezone
 from bson.objectid import ObjectId
-from typing import List, Dict, Any
-
+from fastapi import APIRouter
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
 security = HTTPBearer()
 
-# Make sure this matches your Node.js JWT_SECRET
 JWT_SECRET = os.getenv("JWT_SECRET", "secrethrejnrsibrgjfskib")
 ALGORITHM = "HS256"
-print("*"*10,JWT_SECRET,"*"*10)
 
 
+# ---------------- JWT verification ----------------
 def verify_jwt(token=Depends(security)):
     try:
         payload = jwt.decode(token.credentials, JWT_SECRET, algorithms=[ALGORITHM])
-        # payload will have {"_id": "<user_id>"}
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+#for testing
 
-# Add note
-@router.post("/")
+@router.get("/test")
+async def test():
+    return {"message": "Hello World"}
+    
+
+# ---------------- Add note ----------------
+@router.post("/notes")
 async def add_note(note: Note, payload: dict = Depends(verify_jwt)):
     user_id = payload["_id"]
-    note_data = {
-        "title": note.title,
-        "content": note.content,
-        "userId": user_id
-    }
-    result = notes_collection.insert_one(note_data)
-    
-    # Invalidate the cache for this user's notes
-    await invalidate_notes_cache(user_id)
-    
-    return {"id": str(result.inserted_id), "message": "Note added"}
+    try:
+        note_data = {
+            "title": note.title,
+            "content": note.content,
+            "userId": user_id,
+            "createdAt": datetime.now(timezone.utc).isoformat()
+        }
+        result = notes_collection.insert_one(note_data)
+        invalidate_notes_cache(user_id)
 
-# Fetch notes (with pagination and Redis caching)
-@router.get("/")
-async def get_notes(skip: int = 0, limit: int = 20, payload: dict = Depends(verify_jwt)):
+        new_note = {
+            "id": str(result.inserted_id),
+            "title": note.title,
+            "content": note.content,
+            "userId": user_id,
+            "createdAt": note_data["createdAt"]
+        }
+
+        # Broadcast
+        await manager.broadcast({
+            "type": "note_added",
+            "data": new_note,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+        return {"message": "Note added successfully", "note": new_note}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------- Get notes ----------------
+@router.get("/notes")
+def get_notes(skip: int = 0, limit: int = 20, payload: dict = Depends(verify_jwt)):
     user_id = payload["_id"]
-    
-    # Try to get notes from cache first
-    cached_notes = await get_cached_notes(user_id)
+    cached_notes = get_cached_notes(user_id)
     if cached_notes is not None:
         return cached_notes
-    
-    # If not in cache, fetch from database
+
     notes_cursor = notes_collection.find({"userId": user_id}).skip(skip).limit(limit)
-    notes = []
-    for note in notes_cursor:
-        notes.append({
-            "title": note["title"],
-            "content": note["content"],
-            "id": str(note["_id"])
-        })
-    
-    # Cache the results for future requests
+    notes = [{"id": str(note["_id"]), "title": note["title"], "content": note["content"]} for note in notes_cursor]
+
     if notes:
-        await set_cached_notes(user_id, notes)
-    
+        set_cached_notes(user_id, notes)
     return notes
 
-
-@router.delete("/{note_id}")
+# ---------------- Delete note ----------------
+@router.delete("/notes/{note_id}")
 async def delete_note(note_id: str, payload: dict = Depends(verify_jwt)):
     user_id = payload["_id"]
 
-    # Check cached notes for the user
-    cached_notes = await get_cached_notes(user_id)
-    if cached_notes:
-        updated_notes = [note for note in cached_notes if note.get("id") != note_id]
-        await set_cached_notes(user_id, updated_notes)
+    try:
+        note_oid = ObjectId(note_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid note ID format")
 
-    # Delete from MongoDB
-    result = notes_collection.delete_one({
-        "_id": ObjectId(note_id),
-        "userId": user_id
-    })
-
-    if result.deleted_count == 0:
+    note = notes_collection.find_one({"_id": note_oid, "userId": user_id})
+    if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
-    return {"message": "Note deleted"}
+    notes_collection.delete_one({"_id": note_oid, "userId": user_id})
+    invalidate_notes_cache(user_id)
+
+    await manager.broadcast({
+        "event": "note_deleted",
+        "id": note_id
+    })
+    
+    return {"message": "Note deleted successfully"}
+
+# ---------------- WebSocket ----------------
+@router.websocket("/notes/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str):
+    user_id = None
+    try:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+            user_id = str(payload["_id"])
+        except Exception as e:
+            logger.error(f"Invalid token: {e}")
+            await websocket.close(code=1008)
+            return
+
+        await websocket.accept()
+        logger.info(f"WebSocket connection accepted for user {user_id}")
+
+        await manager.connect(websocket, user_id)
+
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+
+                if data == "ping":
+                    await websocket.send_text("pong")
+                else:
+                    logger.info(f"Received from {user_id}: {data}")
+
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "heartbeat"})
+                except Exception as e:
+                    logger.error(f"Heartbeat failed for {user_id}: {e}")
+                    raise WebSocketDisconnect()
+            except WebSocketDisconnect:
+                logger.info(f"Client {user_id} disconnected")
+                break
+            except Exception as e:
+                logger.error(f"Error in WebSocket loop for {user_id}: {e}")
+                await websocket.close(code=1011)
+                break
+
+    finally:
+        if user_id:
+            await manager.disconnect(user_id)
+            logger.info(f"Cleaned up WebSocket connection for user {user_id}")
